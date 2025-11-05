@@ -1,0 +1,22 @@
+{
+  "name": "chess-mcp-widget",
+  "version": "1.0.0",
+  "description": "Chess board widget for ChatGPT MCP",
+  "main": "dist/chess.js",
+  "scripts": {
+    "build": "esbuild src/ChessBoard.tsx --bundle --format=esm --outfile=dist/chess.js"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "chess.js": "^1.0.0-beta.8",
+    "react-chessboard": "^4.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "typescript": "^5.3.0",
+    "esbuild": "^0.19.0"
+  }
+}
+

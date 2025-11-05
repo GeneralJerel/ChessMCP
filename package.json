@@ -1,0 +1,37 @@
+{
+  "name": "chess-mcp",
+  "version": "1.0.0",
+  "description": "Chess MCP application for ChatGPT using OpenAI Apps SDK",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "serve": "serve -s ./assets -p 4444 --cors",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["chess", "mcp", "openai", "chatgpt"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^4.5.2",
+    "@tailwindcss/vite": "^4.1.11",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.6",
+    "serve": "^14.2.4",
+    "tailwindcss": "^4.1.11",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.1"
+  },
+  "dependencies": {
+    "@types/chess.js": "^0.13.0",
+    "chess.js": "^1.0.0-beta.8",
+    "lucide-react": "^0.536.0",
+    "react": "^19.1.1",
+    "react-chessboard": "^4.3.0",
+    "react-dom": "^19.1.1"
+  }
+}
+

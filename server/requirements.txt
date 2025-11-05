@@ -1,0 +1,6 @@
+mcp
+fastapi
+python-chess
+stockfish
+uvicorn
+
