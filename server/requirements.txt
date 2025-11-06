@@ -3,4 +3,10 @@ fastapi
 python-chess
 stockfish
 uvicorn
+pyjwt[crypto]
+cryptography
+requests
+google-auth
+google-auth-oauthlib
+python-dotenv
 
