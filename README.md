@@ -118,6 +118,41 @@ python3 main.py
 npm run serve
 ```
 
+## Testing Locally (No ChatGPT Required!)
+
+### Option 1: Direct Local Tester (Recommended)
+
+Play chess directly without server/OAuth:
+
+```bash
+python3 chess_local_test.py
+```
+
+Commands:
+```
+♟️  > move e4
+♟️  > move e5
+♟️  > status
+♟️  > stockfish
+♟️  > puzzle medium
+```
+
+📖 **See:** [LOCAL_TESTING.md](./LOCAL_TESTING.md)
+
+### Option 2: HTTP Client
+
+Test via HTTP (requires server running):
+
+```bash
+# Terminal 1: Start server
+cd server && python3 main.py
+
+# Terminal 2: Start client
+python3 chess_client.py
+```
+
+📖 **See:** [CLIENT_USAGE.md](./CLIENT_USAGE.md)
+
 ## Testing with ChatGPT
 
 The Chess MCP server now includes **Google OAuth 2.1 authentication** for secure ChatGPT integration!

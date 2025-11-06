@@ -573,7 +573,141 @@ def tool_meta(uri: str) -> Dict[str, Any]:
     }
 
 
-# Register resources properly
+# Register MCP protocol handlers
+
+@mcp._mcp_server.list_tools()
+async def list_tools() -> List[types.Tool]:
+    """List available MCP tools for ChatGPT discovery"""
+    return [
+        types.Tool(
+            name="chess_move",
+            title="Make a chess move",
+            description="Make a move on the chess board using algebraic notation (e.g., e4, Nf3, O-O, e8=Q)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "move": {
+                        "type": "string",
+                        "description": "Move in standard algebraic notation"
+                    }
+                },
+                "required": ["move"],
+                "additionalProperties": False
+            },
+            _meta={
+                "openai/outputTemplate": "ui://widget/chess-board.html",
+                "openai/widgetAccessible": True,
+                "openai/resultCanProduceWidget": True,
+                "openai/toolInvocation/invoking": "Making move...",
+                "openai/toolInvocation/invoked": "Move played"
+            },
+            annotations={
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "openWorldHint": False,
+            }
+        ),
+        types.Tool(
+            name="chess_status",
+            title="Get game status",
+            description="Get current game status, turn, player information, and move count",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False
+            },
+            _meta={
+                "openai/toolInvocation/invoking": "Getting status...",
+                "openai/toolInvocation/invoked": "Status retrieved"
+            },
+            annotations={
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "openWorldHint": False,
+            }
+        ),
+        types.Tool(
+            name="chess_reset",
+            title="Reset chess game",
+            description="Reset the chess game to the starting position",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False
+            },
+            _meta={
+                "openai/outputTemplate": "ui://widget/chess-board.html",
+                "openai/widgetAccessible": True,
+                "openai/resultCanProduceWidget": True,
+                "openai/toolInvocation/invoking": "Resetting game...",
+                "openai/toolInvocation/invoked": "Game reset"
+            },
+            annotations={
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "openWorldHint": False,
+            }
+        ),
+        types.Tool(
+            name="chess_puzzle",
+            title="Show mate in 1 puzzle",
+            description="Load a mate-in-one puzzle position for the user to solve (easy, medium, or hard)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "difficulty": {
+                        "type": "string",
+                        "enum": ["easy", "medium", "hard"],
+                        "description": "Puzzle difficulty level",
+                        "default": "easy"
+                    }
+                },
+                "additionalProperties": False
+            },
+            _meta={
+                "openai/outputTemplate": "ui://widget/chess-board.html",
+                "openai/widgetAccessible": True,
+                "openai/resultCanProduceWidget": True,
+                "openai/toolInvocation/invoking": "Loading puzzle...",
+                "openai/toolInvocation/invoked": "Puzzle loaded"
+            },
+            annotations={
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "openWorldHint": False,
+            }
+        ),
+        types.Tool(
+            name="chess_stockfish",
+            title="Analyze with Stockfish",
+            description="Get Stockfish engine analysis of the current chess position",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "depth": {
+                        "type": "integer",
+                        "description": "Analysis depth (default: 15, higher is more accurate but slower)",
+                        "default": 15,
+                        "minimum": 1,
+                        "maximum": 30
+                    }
+                },
+                "additionalProperties": False
+            },
+            _meta={
+                "openai/widgetAccessible": True,
+                "openai/toolInvocation/invoking": "Analyzing position...",
+                "openai/toolInvocation/invoked": "Analysis complete"
+            },
+            annotations={
+                "readOnlyHint": True,
+                "destructiveHint": False,
+                "openWorldHint": False,
+            }
+        ),
+    ]
+
+
 @mcp._mcp_server.list_resources()
 async def list_resources() -> List[types.Resource]:
     """List available HTML widget resources"""
@@ -582,6 +716,21 @@ async def list_resources() -> List[types.Resource]:
             uri="ui://widget/chess-board.html",
             name="Chess Board Widget",
             title="Chess Board Widget",
+            description="Interactive chess board showing the current game position with move history",
+            mimeType=MIME_TYPE,
+            _meta=tool_meta("ui://widget/chess-board.html"),
+        )
+    ]
+
+
+@mcp._mcp_server.list_resource_templates()
+async def list_resource_templates() -> List[types.ResourceTemplate]:
+    """List available resource templates"""
+    return [
+        types.ResourceTemplate(
+            name="Chess Board Widget",
+            title="Chess Board Widget",
+            uriTemplate="ui://widget/chess-board.html",
             description="Interactive chess board showing the current game position with move history",
             mimeType=MIME_TYPE,
             _meta=tool_meta("ui://widget/chess-board.html"),
@@ -624,7 +773,77 @@ async def handle_read_resource(req: types.ReadResourceRequest) -> types.ServerRe
     )
 
 
-# Register the resource handler
+async def handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
+    """
+    Handle tool call requests from ChatGPT.
+    Routes to appropriate @mcp.tool() decorated functions.
+    """
+    tool_name = req.params.name
+    arguments = req.params.arguments or {}
+    
+    print(f"[MCP] CallToolRequest: {tool_name} with args: {arguments}")
+    
+    try:
+        # Route to the appropriate tool function
+        if tool_name == "chess_move":
+            result = chess_move(arguments.get("move", ""))
+        elif tool_name == "chess_status":
+            result = chess_status()
+        elif tool_name == "chess_reset":
+            result = chess_reset()
+        elif tool_name == "chess_puzzle":
+            result = chess_puzzle(arguments.get("difficulty", "easy"))
+        elif tool_name == "chess_stockfish":
+            result = chess_stockfish(arguments.get("depth", 15))
+        else:
+            return types.ServerResult(
+                types.CallToolResult(
+                    content=[
+                        types.TextContent(
+                            type="text",
+                            text=f"Unknown tool: {tool_name}"
+                        )
+                    ],
+                    isError=True
+                )
+            )
+        
+        # Convert tool result to MCP CallToolResult
+        content = []
+        for item in result.get("content", []):
+            if item.get("type") == "text":
+                content.append(
+                    types.TextContent(
+                        type="text",
+                        text=item.get("text", "")
+                    )
+                )
+        
+        return types.ServerResult(
+            types.CallToolResult(
+                content=content,
+                structuredContent=result.get("structuredContent", {}),
+                _meta=result.get("_meta", {})
+            )
+        )
+    
+    except Exception as e:
+        print(f"[MCP] Error calling tool {tool_name}: {e}")
+        return types.ServerResult(
+            types.CallToolResult(
+                content=[
+                    types.TextContent(
+                        type="text",
+                        text=f"Error executing {tool_name}: {str(e)}"
+                    )
+                ],
+                isError=True
+            )
+        )
+
+
+# Register the request handlers
+mcp._mcp_server.request_handlers[types.CallToolRequest] = handle_call_tool
 mcp._mcp_server.request_handlers[types.ReadResourceRequest] = handle_read_resource
 
 
