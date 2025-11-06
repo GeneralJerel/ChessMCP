@@ -3,15 +3,29 @@
 Chess MCP Server
 Provides chess game functionality via Model Context Protocol
 Following OpenAI Apps SDK best practices
+With Google OAuth 2.1 authentication
 """
 
 import chess
 import chess.pgn
+import requests
+import json
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 from functools import lru_cache
 from mcp.server.fastmcp import FastMCP
 import mcp.types as types
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from starlette.middleware.cors import CORSMiddleware
+
+# OAuth imports
+from oauth_config import oauth_config
+from auth_middleware import AuthenticationMiddleware, get_current_user
+from client_store import client_store
+from auth_code_store import auth_code_store
+from jwt_keys import jwt_key_manager
+from oauth_proxy import authorization_endpoint, oauth_callback, token_endpoint, jwks_endpoint
 
 # Initialize FastMCP
 mcp = FastMCP("chess-mcp", stateless_http=True)
@@ -22,31 +36,41 @@ ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 # MIME type for HTML widgets
 MIME_TYPE = "text/html+skybridge"
 
-# Global game state (in production, this should be per-user session)
-current_game = chess.Board()
-move_history = []
-player_white = "Player"
-player_black = "AI/Opponent"
+# Per-user game state storage (in-memory)
+# Key: user email, Value: dict with game state
+user_games: Dict[str, Dict[str, Any]] = {}
 
 # Path to stockfish binary (update this path if needed)
 STOCKFISH_PATH = "/opt/homebrew/bin/stockfish"  # Common macOS path
 
 
-def get_game_status():
+def get_user_game(user_email: str) -> Dict[str, Any]:
+    """Get or create a game state for a user"""
+    if user_email not in user_games:
+        user_games[user_email] = {
+            "board": chess.Board(),
+            "move_history": [],
+            "player_white": "You",
+            "player_black": "Opponent"
+        }
+    return user_games[user_email]
+
+
+def get_game_status(board: chess.Board) -> str:
     """Get current game status"""
-    if current_game.is_checkmate():
+    if board.is_checkmate():
         return "checkmate"
-    elif current_game.is_stalemate():
+    elif board.is_stalemate():
         return "stalemate"
-    elif current_game.is_insufficient_material():
+    elif board.is_insufficient_material():
         return "draw_insufficient_material"
-    elif current_game.is_check():
+    elif board.is_check():
         return "check"
     else:
         return "ongoing"
 
 
-def format_move_history():
+def format_move_history(move_history: List[str]) -> str:
     """Format move history in algebraic notation"""
     if not move_history:
         return "No moves yet"
@@ -85,7 +109,18 @@ def chess_move(move: str) -> dict:
     Returns:
         Dictionary containing the updated game state
     """
-    global current_game, move_history
+    # Get authenticated user
+    user = get_current_user()
+    if not user:
+        return {
+            "content": [{"type": "text", "text": "Authentication required"}],
+            "structuredContent": {"error": "not_authenticated"}
+        }
+    
+    # Get user's game state
+    game_state = get_user_game(user.email)
+    current_game = game_state["board"]
+    move_history = game_state["move_history"]
     
     try:
         # Try to parse and make the move
@@ -96,7 +131,7 @@ def chess_move(move: str) -> dict:
         move_history.append(move)
         
         # Get game status
-        status = get_game_status()
+        status = get_game_status(current_game)
         
         # Get legal moves for next turn
         legal_moves = [current_game.san(m) for m in current_game.legal_moves]
@@ -107,7 +142,7 @@ def chess_move(move: str) -> dict:
             "move": move,
             "fen": current_game.fen(),
             "turn": "white" if current_game.turn == chess.WHITE else "black",
-            "move_history": format_move_history(),
+            "move_history": format_move_history(move_history),
             "status": status,
             "legal_moves_count": len(legal_moves),
             "is_check": current_game.is_check(),
@@ -172,7 +207,14 @@ def chess_stockfish(depth: int = 15) -> dict:
     Returns:
         Dictionary containing engine analysis and best move
     """
-    global current_game
+    # Get user-specific game if authenticated, otherwise use default
+    user = get_current_user()
+    if user:
+        game_state = get_user_game(user.email)
+        current_game = game_state["board"]
+    else:
+        # Anonymous access - use a default starting position
+        current_game = chess.Board()
     
     try:
         import stockfish as sf
@@ -267,15 +309,23 @@ def chess_reset() -> dict:
     Returns:
         Dictionary confirming the reset
     """
-    global current_game, move_history
+    # Get authenticated user
+    user = get_current_user()
+    if not user:
+        return {
+            "content": [{"type": "text", "text": "Authentication required"}],
+            "structuredContent": {"error": "not_authenticated"}
+        }
     
-    current_game = chess.Board()
-    move_history = []
+    # Reset user's game state
+    game_state = get_user_game(user.email)
+    game_state["board"] = chess.Board()
+    game_state["move_history"] = []
     
     return {
         "content": [{"type": "text", "text": "Chess game reset to starting position"}],
         "structuredContent": {
-            "fen": current_game.fen(),
+            "fen": game_state["board"].fen(),
             "status": "ongoing"
         }
     }
@@ -298,14 +348,27 @@ def chess_status() -> dict:
     Returns:
         Dictionary containing game status, turn, players, and move count
     """
-    global current_game, move_history, player_white, player_black
+    # Get user-specific game if authenticated, otherwise use default
+    user = get_current_user()
+    if user:
+        game_state = get_user_game(user.email)
+        current_game = game_state["board"]
+        move_history = game_state["move_history"]
+        player_white = game_state["player_white"]
+        player_black = game_state["player_black"]
+    else:
+        # Anonymous access
+        current_game = chess.Board()
+        move_history = []
+        player_white = "Player"
+        player_black = "Opponent"
     
     # Get current turn
     turn_color = "White" if current_game.turn == chess.WHITE else "Black"
     turn_player = player_white if current_game.turn == chess.WHITE else player_black
     
     # Get game status
-    status = get_game_status()
+    status = get_game_status(current_game)
     
     # Count moves
     full_moves = current_game.fullmove_number
@@ -385,7 +448,14 @@ def chess_puzzle(difficulty: str = "easy") -> dict:
     Returns:
         Dictionary with puzzle position and instructions
     """
-    global current_game, move_history, player_white, player_black
+    # Get authenticated user
+    user = get_current_user()
+    
+    if not user:
+        return {
+            "content": [{"type": "text", "text": "Authentication required"}],
+            "structuredContent": {"error": "not_authenticated"}
+        }
     
     # Collection of mate-in-1 puzzles (FEN positions where White has mate in 1)
     puzzles = {
@@ -450,11 +520,12 @@ def chess_puzzle(difficulty: str = "easy") -> dict:
     puzzle_set = puzzles.get(difficulty, puzzles["easy"])
     puzzle = random.choice(puzzle_set)
     
-    # Load the puzzle position
-    current_game = chess.Board(puzzle["fen"])
-    move_history = []
-    player_white = "You"
-    player_black = "Computer"
+    # Load the puzzle position into user's game state
+    game_state = get_user_game(user.email)
+    game_state["board"] = chess.Board(puzzle["fen"])
+    game_state["move_history"] = []
+    game_state["player_white"] = "You"
+    game_state["player_black"] = "Computer"
     
     # Create message
     message = f"🧩 Mate in 1 Puzzle ({difficulty.capitalize()})\n\n"
@@ -465,7 +536,7 @@ def chess_puzzle(difficulty: str = "easy") -> dict:
     return {
         "content": [{"type": "text", "text": message}],
         "structuredContent": {
-            "fen": current_game.fen(),
+            "fen": game_state["board"].fen(),
             "puzzle_type": "mate_in_1",
             "difficulty": difficulty,
             "turn": "white",
@@ -560,22 +631,215 @@ mcp._mcp_server.request_handlers[types.ReadResourceRequest] = handle_read_resour
 # Create ASGI app
 app = mcp.streamable_http_app()
 
-# Add CORS middleware
-try:
-    from starlette.middleware.cors import CORSMiddleware
+
+# ===== OAuth 2.1 Endpoints (using Starlette routing) =====
+
+from starlette.routing import Route, Mount
+from starlette.responses import Response as StarletteResponse
+
+async def protected_resource_metadata(request: Request):
+    """
+    RFC 9728: OAuth 2.0 Protected Resource Metadata
+    Returns metadata about this MCP server as a protected resource.
+    """
+    print(f"[OAuth] Protected resource metadata requested from {request.client.host if request.client else 'unknown'}")
     
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-        allow_credentials=False,
-    )
-except Exception:
-    pass
+    response = JSONResponse(content=oauth_config.get_protected_resource_metadata())
+    
+    # Add cache-control headers to prevent caching by ChatGPT
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    
+    return response
+
+
+async def authorization_server_metadata(request: Request):
+    """
+    RFC 8414: OAuth 2.0 Authorization Server Metadata
+    Returns our OAuth server metadata (not Google's).
+    """
+    print(f"[OAuth] Authorization server metadata requested from {request.client.host if request.client else 'unknown'}")
+    
+    try:
+        # Return OUR authorization server metadata
+        metadata = {
+            "issuer": oauth_config.MCP_SERVER_URL,
+            "authorization_endpoint": f"{oauth_config.MCP_SERVER_URL}/oauth/authorize",
+            "token_endpoint": f"{oauth_config.MCP_SERVER_URL}/oauth/token",
+            "jwks_uri": f"{oauth_config.MCP_SERVER_URL}/oauth/jwks.json",
+            "registration_endpoint": f"{oauth_config.MCP_SERVER_URL}/.well-known/oauth-authorization-server/register",
+            "scopes_supported": ["openid", "email", "profile"],
+            "response_types_supported": ["code"],
+            "response_modes_supported": ["query"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
+            "code_challenge_methods_supported": ["S256"],
+            "subject_types_supported": ["public"],
+            "id_token_signing_alg_values_supported": ["RS256"],
+        }
+        
+        print(f"[OAuth] Returning our authorization endpoints:")
+        print(f"  - Issuer: {metadata['issuer']}")
+        print(f"  - Authorization: {metadata['authorization_endpoint']}")
+        print(f"  - Token: {metadata['token_endpoint']}")
+        print(f"  - JWKS: {metadata['jwks_uri']}")
+        print(f"  - Registration: {metadata['registration_endpoint']}")
+        
+        response = JSONResponse(content=metadata)
+        
+        # Add cache-control headers to prevent caching by ChatGPT
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        
+        return response
+    
+    except Exception as e:
+        print(f"[OAuth] Error generating authorization server metadata: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "server_error", "error_description": str(e)}
+        )
+
+
+async def dynamic_client_registration(request: Request):
+    """
+    RFC 7591: OAuth 2.0 Dynamic Client Registration
+    Generates and returns our own client credentials.
+    """
+    print(f"[OAuth] DCR registration request received from {request.client.host if request.client else 'unknown'}")
+    
+    try:
+        # Parse the registration request
+        body = await request.json()
+        
+        redirect_uris = body.get("redirect_uris", [])
+        grant_types = body.get("grant_types", ["authorization_code", "refresh_token"])
+        response_types = body.get("response_types", ["code"])
+        
+        print(f"[OAuth] DCR redirect_uris: {redirect_uris}")
+        
+        # Register new client in our store
+        registration = client_store.register_client(
+            redirect_uris=redirect_uris,
+            grant_types=grant_types,
+            response_types=response_types,
+            metadata=body
+        )
+        
+        print(f"[OAuth] DCR generated client_id: {registration.client_id}")
+        
+        # Return RFC 7591 compliant response
+        response = JSONResponse(
+            content=registration.to_dict(),
+            status_code=201
+        )
+        
+        # Add cache-control headers to prevent caching by ChatGPT
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        
+        return response
+    
+    except Exception as e:
+        print(f"[OAuth] Error in dynamic client registration: {e}")
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_client_metadata", "error_description": str(e)}
+        )
+
+
+async def health_check(request: Request):
+    """Health check endpoint"""
+    return JSONResponse(content={
+        "status": "healthy",
+        "oauth_configured": bool(oauth_config.GOOGLE_CLIENT_ID and oauth_config.GOOGLE_CLIENT_SECRET),
+        "server_url": oauth_config.MCP_SERVER_URL
+    })
+
+
+# Add OAuth routes to the Starlette app's router
+oauth_routes = [
+    # OAuth discovery endpoints
+    Route("/.well-known/oauth-protected-resource", protected_resource_metadata, methods=["GET"]),
+    Route("/.well-known/oauth-authorization-server", authorization_server_metadata, methods=["GET"]),
+    Route("/.well-known/oauth-authorization-server/register", dynamic_client_registration, methods=["POST"]),
+    
+    # OAuth proxy endpoints
+    Route("/oauth/authorize", authorization_endpoint, methods=["GET"]),
+    Route("/oauth/callback", oauth_callback, methods=["GET"]),
+    Route("/oauth/token", token_endpoint, methods=["POST"]),
+    Route("/oauth/jwks.json", jwks_endpoint, methods=["GET"]),
+    
+    # Utility endpoints
+    Route("/health", health_check, methods=["GET"]),
+]
+
+# Add routes to the router (prepend so they're checked first)
+if hasattr(app, 'router') and hasattr(app.router, 'routes'):
+    # Insert at the beginning so OAuth routes are checked first
+    for route in reversed(oauth_routes):
+        app.router.routes.insert(0, route)
+
+# Add CORS middleware BEFORE auth (must be outermost)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=False,
+)
+
+# Add Authentication Middleware (will skip MCP protocol endpoints)
+app.add_middleware(AuthenticationMiddleware)
 
 
 if __name__ == "__main__":
     import uvicorn
+    
+    # Validate OAuth configuration
+    print("\n" + "="*70)
+    print("Chess MCP Server with OAuth 2.1 Authorization Server Proxy")
+    print("="*70)
+    
+    try:
+        oauth_config.validate()
+        print("✓ OAuth configuration validated")
+        print(f"✓ Server URL: {oauth_config.MCP_SERVER_URL}")
+        print(f"✓ Google Client ID: {oauth_config.GOOGLE_CLIENT_ID[:30]}...")
+        print(f"✓ JWT Key ID: {jwt_key_manager.key_id}")
+        
+        print("\n📋 OAuth Discovery Endpoints:")
+        print(f"  - Protected Resource: {oauth_config.MCP_SERVER_URL}/.well-known/oauth-protected-resource")
+        print(f"  - Auth Server Metadata: {oauth_config.MCP_SERVER_URL}/.well-known/oauth-authorization-server")
+        print(f"  - DCR Registration: {oauth_config.MCP_SERVER_URL}/.well-known/oauth-authorization-server/register")
+        
+        print("\n🔐 OAuth Flow Endpoints:")
+        print(f"  - Authorization: {oauth_config.MCP_SERVER_URL}/oauth/authorize")
+        print(f"  - Token Exchange: {oauth_config.MCP_SERVER_URL}/oauth/token")
+        print(f"  - JWKS (Public Keys): {oauth_config.MCP_SERVER_URL}/oauth/jwks.json")
+        print(f"  - OAuth Callback: {oauth_config.MCP_SERVER_URL}/oauth/callback")
+        
+        print("\n⚙️  Other Endpoints:")
+        print(f"  - Health Check: {oauth_config.MCP_SERVER_URL}/health")
+        
+        print(f"\n💡 Registered Clients: {client_store.count()}")
+        print(f"💡 Active Auth Codes: {auth_code_store.count()}")
+        
+        print("\n⚠️  IMPORTANT: Update Google OAuth redirect URI to:")
+        print(f"   {oauth_config.MCP_SERVER_URL}/oauth/callback")
+        
+    except ValueError as e:
+        print(f"\n⚠️  WARNING: OAuth not fully configured")
+        print(f"   {e}")
+        print(f"\n   Server will start but OAuth endpoints will not function.")
+        print(f"   Create server/.env file with GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET")
+    
+    print("\n" + "="*70)
+    print(f"🚀 Starting server on http://0.0.0.0:8000")
+    print("="*70 + "\n")
+    
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 

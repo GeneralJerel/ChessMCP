@@ -120,20 +120,30 @@ npm run serve
 
 ## Testing with ChatGPT
 
-To test your app in ChatGPT development mode using ngrok, see:
+The Chess MCP server now includes **Google OAuth 2.1 authentication** for secure ChatGPT integration!
 
-📖 **[HOW-TO-TEST-WITH-CHATGPT.md](./HOW-TO-TEST-WITH-CHATGPT.md)**
+📖 **Quick Start:** [OAUTH_QUICK_START.md](./OAUTH_QUICK_START.md) (5 minutes)  
+📖 **Detailed Setup:** [GOOGLE_OAUTH_SETUP.md](./GOOGLE_OAUTH_SETUP.md) (Step-by-step)  
+📖 **Next Steps:** [NEXT_STEPS.md](./NEXT_STEPS.md) (What to do now)  
+📖 **Troubleshooting:** [CHATGPT_CONNECTOR_TROUBLESHOOTING.md](./CHATGPT_CONNECTOR_TROUBLESHOOTING.md)
 
 Quick start:
 ```bash
+# 1. Set up Google OAuth credentials (see GOOGLE_OAUTH_SETUP.md)
+# 2. Create server/.env with credentials
+
 # Terminal 1: Start server
-cd server && python3 main.py
+cd server
+pip3 install -r requirements.txt
+python3 main.py
 
 # Terminal 2: Expose with ngrok
 ngrok http 8000
 
-# Then add the ngrok URL to ChatGPT Settings > Connectors
-# URL format: https://YOUR-SUBDOMAIN.ngrok-free.app/mcp
+# Update server/.env with ngrok URL, restart server
+
+# Then add connector in ChatGPT Settings > Connectors
+# URL format: https://YOUR-SUBDOMAIN.ngrok-free.app (no /mcp suffix)
 ```
 
 ## Usage
