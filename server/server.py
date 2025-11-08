@@ -13,31 +13,25 @@ from mcp.server.fastmcp import FastMCP
 # Initialize FastMCP
 mcp = FastMCP("chess-mcp")
 
-# Global game state (in production, this should be per-user session)
-current_game = chess.Board()
-move_history = []
-player_white = "Player"
-player_black = "AI/Opponent"
-
 # Path to stockfish binary (update this path if needed)
 STOCKFISH_PATH = "/opt/homebrew/bin/stockfish"  # Common macOS path
 
 
-def get_game_status():
+def get_game_status(board: chess.Board) -> str:
     """Get current game status"""
-    if current_game.is_checkmate():
+    if board.is_checkmate():
         return "checkmate"
-    elif current_game.is_stalemate():
+    elif board.is_stalemate():
         return "stalemate"
-    elif current_game.is_insufficient_material():
+    elif board.is_insufficient_material():
         return "draw_insufficient_material"
-    elif current_game.is_check():
+    elif board.is_check():
         return "check"
     else:
         return "ongoing"
 
 
-def format_move_history():
+def format_move_history(move_history: list) -> str:
     """Format move history in algebraic notation"""
     if not move_history:
         return "No moves yet"
@@ -56,6 +50,122 @@ def format_move_history():
 
 
 @mcp.tool(
+    name="chess_multimove",
+    title="Make multiple chess moves",
+    description="Make multiple moves on the chess board at once using algebraic notation. Supports formats like 'e4 c5', '1. e4 c5', or '1. e4 c5 2. Nf3 d6'",
+    annotations={
+        "readOnlyHint": False,
+        "openai/outputTemplate": "ui://widget/chess-board.html",
+        "openai/toolInvocation/invoking": "Making moves...",
+        "openai/toolInvocation/invoked": "Moves played"
+    }
+)
+def chess_multimove(moves: str, fen: str = None) -> dict:
+    """
+    Make multiple chess moves on the board at once.
+    
+    Args:
+        moves: Multiple moves in algebraic notation (e.g., "e4 c5", "1. e4 c5", "1. e4 c5 2. Nf3 d6")
+        fen: Optional FEN string representing current position. If not provided, uses starting position.
+    
+    Returns:
+        Dictionary containing the updated game state after all moves
+    """
+    # Create board from FEN or use starting position
+    try:
+        if fen:
+            current_game = chess.Board(fen)
+        else:
+            current_game = chess.Board()
+    except ValueError as e:
+        return {
+            "content": [{"type": "text", "text": f"Invalid FEN: {str(e)}"}],
+            "structuredContent": {"error": "invalid_fen"}
+        }
+    
+    # Parse moves - handle various formats like "e4 c5", "1. e4 c5", "1. e4 c5 2. Nf3"
+    import re
+    # Remove move numbers (e.g., "1.", "2.")
+    moves_cleaned = re.sub(r'\d+\.', '', moves)
+    # Split by whitespace
+    move_list = moves_cleaned.split()
+    
+    if not move_list:
+        return {
+            "content": [{"type": "text", "text": "No moves provided"}],
+            "structuredContent": {"error": "no_moves"}
+        }
+    
+    played_moves = []
+    
+    try:
+        # Apply each move sequentially
+        for move in move_list:
+            if not move.strip():
+                continue
+            
+            chess_move_obj = current_game.parse_san(move)
+            current_game.push(chess_move_obj)
+            played_moves.append(move)
+        
+        # Get game status
+        status = get_game_status(current_game)
+        
+        # Get legal moves for next turn
+        legal_moves = [current_game.san(m) for m in current_game.legal_moves]
+        
+        # Prepare response
+        response = {
+            "success": True,
+            "moves": played_moves,
+            "moves_count": len(played_moves),
+            "fen": current_game.fen(),
+            "turn": "white" if current_game.turn == chess.WHITE else "black",
+            "status": status,
+            "legal_moves_count": len(legal_moves),
+            "is_check": current_game.is_check(),
+            "is_checkmate": current_game.is_checkmate(),
+            "is_stalemate": current_game.is_stalemate()
+        }
+        
+        # Format message
+        moves_played_text = ", ".join(played_moves)
+        if status == "checkmate":
+            winner = "Black" if current_game.turn == chess.WHITE else "White"
+            message = f"Checkmate! {winner} wins. Moves played: {moves_played_text}"
+        elif status == "stalemate":
+            message = f"Stalemate! The game is a draw. Moves played: {moves_played_text}"
+        elif status == "check":
+            message = f"Check! Moves played: {moves_played_text}"
+        else:
+            message = f"{len(played_moves)} moves played: {moves_played_text}"
+        
+        return {
+            "content": [{"type": "text", "text": message}],
+            "structuredContent": {
+                "fen": response["fen"],
+                "moves": played_moves,
+                "status": status,
+                "turn": response["turn"]
+            },
+            "_meta": {
+                "full_state": response,
+                "legal_moves": legal_moves[:50]  # Limit for metadata
+            }
+        }
+        
+    except ValueError as e:
+        return {
+            "content": [{"type": "text", "text": f"Invalid move sequence. Error at move '{move}': {str(e)}. Successfully played: {', '.join(played_moves) if played_moves else 'none'}"}],
+            "structuredContent": {
+                "error": str(e),
+                "fen": current_game.fen(),
+                "played_moves": played_moves
+            }
+        }
+
+
+@mcp.tool(
     name="chess_move",
     title="Make a chess move",
     description="Make a move on the chess board using algebraic notation",
@@ -66,28 +176,36 @@ def format_move_history():
         "openai/toolInvocation/invoked": "Move played"
     }
 )
-def chess_move(move: str) -> dict:
+def chess_move(move: str, fen: str = None) -> dict:
     """
     Make a chess move on the board.
     
     Args:
         move: The move in algebraic notation (e.g., "e4", "Nf3", "O-O", "e8=Q")
+        fen: Optional FEN string representing current position. If not provided, uses starting position.
     
     Returns:
         Dictionary containing the updated game state
     """
-    global current_game, move_history
+    # Create board from FEN or use starting position
+    try:
+        if fen:
+            current_game = chess.Board(fen)
+        else:
+            current_game = chess.Board()
+    except ValueError as e:
+        return {
+            "content": [{"type": "text", "text": f"Invalid FEN: {str(e)}"}],
+            "structuredContent": {"error": "invalid_fen"}
+        }
     
     try:
         # Try to parse and make the move
         chess_move_obj = current_game.parse_san(move)
         current_game.push(chess_move_obj)
         
-        # Add to move history
-        move_history.append(move)
-        
         # Get game status
-        status = get_game_status()
+        status = get_game_status(current_game)
         
         # Get legal moves for next turn
         legal_moves = [current_game.san(m) for m in current_game.legal_moves]
@@ -98,7 +216,6 @@ def chess_move(move: str) -> dict:
             "move": move,
             "fen": current_game.fen(),
             "turn": "white" if current_game.turn == chess.WHITE else "black",
-            "move_history": format_move_history(),
             "status": status,
             "legal_moves_count": len(legal_moves),
             "is_check": current_game.is_check(),
@@ -127,8 +244,7 @@ def chess_move(move: str) -> dict:
             },
             "_meta": {
                 "full_state": response,
-                "legal_moves": legal_moves[:50],  # Limit for metadata
-                "move_history_list": move_history
+                "legal_moves": legal_moves[:50]  # Limit for metadata
             }
         }
         
@@ -153,17 +269,28 @@ def chess_move(move: str) -> dict:
         "openai/toolInvocation/invoked": "Analysis complete"
     }
 )
-def chess_stockfish(depth: int = 15) -> dict:
+def chess_stockfish(depth: int = 15, fen: str = None) -> dict:
     """
     Analyze the current position using Stockfish engine.
     
     Args:
         depth: Analysis depth (default: 15)
+        fen: Optional FEN string representing current position. If not provided, uses starting position.
     
     Returns:
         Dictionary containing engine analysis and best move
     """
-    global current_game
+    # Create board from FEN or use starting position
+    try:
+        if fen:
+            current_game = chess.Board(fen)
+        else:
+            current_game = chess.Board()
+    except ValueError as e:
+        return {
+            "content": [{"type": "text", "text": f"Invalid FEN: {str(e)}"}],
+            "structuredContent": {"error": "invalid_fen"}
+        }
     
     try:
         import stockfish as sf
@@ -256,18 +383,17 @@ def chess_reset() -> dict:
     Reset the chess game to the starting position.
     
     Returns:
-        Dictionary confirming the reset
+        Dictionary confirming the reset with starting FEN
     """
-    global current_game, move_history
-    
-    current_game = chess.Board()
-    move_history = []
+    # Create a new board at starting position
+    starting_board = chess.Board()
     
     return {
         "content": [{"type": "text", "text": "Chess game reset to starting position"}],
         "structuredContent": {
-            "fen": current_game.fen(),
-            "status": "ongoing"
+            "fen": starting_board.fen(),
+            "status": "ongoing",
+            "turn": "white"
         }
     }
 
@@ -282,25 +408,41 @@ def chess_reset() -> dict:
         "openai/toolInvocation/invoked": "Status retrieved"
     }
 )
-def chess_status() -> dict:
+def chess_status(fen: str = None) -> dict:
     """
     Get the current status of the chess game.
+    
+    Args:
+        fen: Optional FEN string representing current position. If not provided, uses starting position.
     
     Returns:
         Dictionary containing game status, turn, players, and move count
     """
-    global current_game, move_history, player_white, player_black
+    # Create board from FEN or use starting position
+    try:
+        if fen:
+            current_game = chess.Board(fen)
+        else:
+            current_game = chess.Board()
+    except ValueError as e:
+        return {
+            "content": [{"type": "text", "text": f"Invalid FEN: {str(e)}"}],
+            "structuredContent": {"error": "invalid_fen"}
+        }
+    
+    # Default player names for stateless mode
+    player_white = "White"
+    player_black = "Black"
     
     # Get current turn
     turn_color = "White" if current_game.turn == chess.WHITE else "Black"
     turn_player = player_white if current_game.turn == chess.WHITE else player_black
     
     # Get game status
-    status = get_game_status()
+    status = get_game_status(current_game)
     
     # Count moves
     full_moves = current_game.fullmove_number
-    half_moves = len(move_history)
     
     # Build status message
     if status == "checkmate":
@@ -328,10 +470,6 @@ def chess_status() -> dict:
     message += f"   White: {player_white}\n"
     message += f"   Black: {player_black}"
     
-    # Add move history summary
-    if move_history:
-        message += f"\n\n📝 Last 3 moves: {', '.join(move_history[-6:])}"
-    
     return {
         "content": [{"type": "text", "text": message}],
         "structuredContent": {
@@ -343,13 +481,11 @@ def chess_status() -> dict:
                 "black": player_black
             },
             "move_number": full_moves,
-            "total_moves": half_moves,
             "fen": current_game.fen(),
             "is_check": current_game.is_check(),
             "is_game_over": current_game.is_game_over()
         },
         "_meta": {
-            "move_history": move_history,
             "legal_moves_count": len(list(current_game.legal_moves))
         }
     }
@@ -358,7 +494,7 @@ def chess_status() -> dict:
 @mcp.tool(
     name="chess_puzzle",
     title="Show mate in 1 puzzle",
-    description="Load a mate-in-one puzzle position for the user to solve",
+    description="Load a mate-in-one puzzle position for the user to solve from a database of 25,000+ puzzles",
     annotations={
         "readOnlyHint": False,
         "openai/outputTemplate": "ui://widget/chess-board.html",
@@ -366,108 +502,229 @@ def chess_status() -> dict:
         "openai/toolInvocation/invoked": "Puzzle loaded"
     }
 )
-def chess_puzzle(difficulty: str = "easy") -> dict:
+def chess_puzzle(puzzle_id: int = None) -> dict:
     """
-    Load a mate-in-one puzzle for the user to solve.
+    Load a mate-in-one puzzle for the user to solve from the database.
     
     Args:
-        difficulty: Puzzle difficulty (easy, medium, hard) - currently loads random positions
+        puzzle_id: Optional specific puzzle ID (1-25000). If not provided, selects randomly.
     
     Returns:
         Dictionary with puzzle position and instructions
     """
-    global current_game, move_history, player_white, player_black
-    
-    # Collection of mate-in-1 puzzles (FEN positions where White has mate in 1)
-    puzzles = {
-        "easy": [
-            # Back rank mate
-            {
-                "fen": "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1",
-                "solution": "Ra8#",
-                "hint": "The black king has no escape on the back rank!"
-            },
-            # Queen and king mate
-            {
-                "fen": "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1",
-                "solution": "Qg7#",
-                "hint": "The queen can deliver checkmate next to the king!"
-            },
-            # Rook mate
-            {
-                "fen": "6k1/6p1/5pKp/8/8/8/8/7R w - - 0 1",
-                "solution": "Rh8#",
-                "hint": "Look at the back rank!"
-            },
-        ],
-        "medium": [
-            # Discovery mate
-            {
-                "fen": "r4rk1/5ppp/8/8/8/2B5/5PPP/4R1K1 w - - 0 1",
-                "solution": "Re8#",
-                "hint": "Move the rook to deliver mate!"
-            },
-            # Knight mate
-            {
-                "fen": "6k1/5ppp/4p3/8/8/8/5PPP/4N1K1 w - - 0 1",
-                "solution": "Nf3# or Ne2#",
-                "hint": "The knight can jump to deliver mate!"
-            },
-            # Smothered mate
-            {
-                "fen": "6rk/6pp/7N/8/8/8/8/6K1 w - - 0 1",
-                "solution": "Nf7#",
-                "hint": "The king is trapped by its own pieces!"
-            },
-        ],
-        "hard": [
-            # Complex position
-            {
-                "fen": "r3k2r/1b2bppp/p7/1p2B3/3pP3/P2B1P2/1P4PP/R4RK1 w kq - 0 1",
-                "solution": "Rf8#",
-                "hint": "The king cannot escape the back rank!"
-            },
-            # Bishop and queen mate
-            {
-                "fen": "r4rk1/1bq2ppp/p7/1p6/3P4/P2B4/1P2QPPP/R5K1 w - - 0 1",
-                "solution": "Qe8#",
-                "hint": "The queen can finish the game!"
-            },
-        ]
-    }
-    
-    # Select puzzle based on difficulty
     import random
-    puzzle_set = puzzles.get(difficulty, puzzles["easy"])
-    puzzle = random.choice(puzzle_set)
+    import csv
     
-    # Load the puzzle position
-    current_game = chess.Board(puzzle["fen"])
-    move_history = []
-    player_white = "You"
-    player_black = "Computer"
+    # Load puzzles from CSV
+    csv_path = Path(__file__).parent / "data" / "mate-in-one.csv"
     
-    # Create message
-    message = f"🧩 Mate in 1 Puzzle ({difficulty.capitalize()})\n\n"
-    message += f"White to move and checkmate in one move!\n\n"
-    message += f"💡 Hint: {puzzle['hint']}\n\n"
-    message += f"Try to find the winning move!"
-    
-    return {
-        "content": [{"type": "text", "text": message}],
-        "structuredContent": {
-            "fen": current_game.fen(),
-            "puzzle_type": "mate_in_1",
-            "difficulty": difficulty,
-            "turn": "white",
-            "status": "puzzle"
-        },
-        "_meta": {
-            "solution": puzzle["solution"],
-            "hint": puzzle["hint"],
-            "is_puzzle": True
+    if not csv_path.exists():
+        return {
+            "content": [{"type": "text", "text": "❌ Puzzle database not found. Please ensure mate-in-one.csv exists in server/data/"}],
+            "structuredContent": {"error": "puzzle_database_not_found"}
         }
+    
+    try:
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            puzzles = list(reader)
+        
+        # Select puzzle
+        if puzzle_id is not None:
+            # Use specific puzzle (1-indexed for user-friendliness)
+            if puzzle_id < 1 or puzzle_id > len(puzzles):
+                return {
+                    "content": [{"type": "text", "text": f"❌ Invalid puzzle ID. Please use a number between 1 and {len(puzzles)}"}],
+                    "structuredContent": {"error": "invalid_puzzle_id"}
+                }
+            puzzle = puzzles[puzzle_id - 1]
+            actual_id = puzzle_id
+        else:
+            # Random puzzle
+            actual_id = random.randint(1, len(puzzles))
+            puzzle = puzzles[actual_id - 1]
+        
+        fen = puzzle['fen']
+        solution_uci = puzzle['best']
+        
+        # Convert UCI to SAN for display
+        board = chess.Board(fen)
+        solution_move = chess.Move.from_uci(solution_uci)
+        solution_san = board.san(solution_move)
+        
+        # Create message
+        message = f"🧩 Mate in 1 Puzzle (#{actual_id})\n\n"
+        message += f"White to move and checkmate in one move!\n\n"
+        message += f"Find the winning move. Use chess_check_puzzle_solution to submit your answer."
+        
+        return {
+            "content": [{"type": "text", "text": message}],
+            "structuredContent": {
+                "fen": fen,
+                "puzzle_type": "mate_in_1",
+                "puzzle_id": actual_id,
+                "turn": "white",
+                "status": "puzzle"
+            },
+            "_meta": {
+                "solution_uci": solution_uci,
+                "solution_san": solution_san,
+                "puzzle_id": actual_id,
+                "is_puzzle": True
+            }
+        }
+    
+    except Exception as e:
+        return {
+            "content": [{"type": "text", "text": f"❌ Error loading puzzle: {str(e)}"}],
+            "structuredContent": {"error": str(e)}
+        }
+
+
+@mcp.tool(
+    name="chess_check_puzzle_solution",
+    title="Check puzzle solution",
+    description="Check if a move is the correct solution to the current puzzle",
+    annotations={
+        "readOnlyHint": False,
+        "openai/outputTemplate": "ui://widget/chess-board.html",
+        "openai/toolInvocation/invoking": "Checking solution...",
+        "openai/toolInvocation/invoked": "Solution checked"
     }
+)
+def chess_check_puzzle_solution(move: str, puzzle_id: int, fen: str) -> dict:
+    """
+    Check if a move is the correct solution to a puzzle.
+    
+    Args:
+        move: The move to check in algebraic notation (e.g., "Qg7", "Ra8")
+        puzzle_id: The puzzle ID being solved
+        fen: The puzzle's FEN position
+    
+    Returns:
+        Dictionary indicating if the solution is correct, with the resulting position if correct
+    """
+    import csv
+    
+    # Load the specific puzzle
+    csv_path = Path(__file__).parent / "data" / "mate-in-one.csv"
+    
+    if not csv_path.exists():
+        return {
+            "content": [{"type": "text", "text": "❌ Puzzle database not found."}],
+            "structuredContent": {"error": "puzzle_database_not_found"}
+        }
+    
+    try:
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            puzzles = list(reader)
+        
+        if puzzle_id < 1 or puzzle_id > len(puzzles):
+            return {
+                "content": [{"type": "text", "text": "❌ Invalid puzzle ID"}],
+                "structuredContent": {"error": "invalid_puzzle_id"}
+            }
+        
+        puzzle = puzzles[puzzle_id - 1]
+        correct_fen = puzzle['fen']
+        solution_uci = puzzle['best']
+        
+        # Verify FEN matches
+        if fen.split()[0] != correct_fen.split()[0]:  # Compare just piece positions
+            return {
+                "content": [{"type": "text", "text": "❌ FEN mismatch. Please reload the puzzle."}],
+                "structuredContent": {"error": "fen_mismatch"}
+            }
+        
+        # Create board and check the move
+        board = chess.Board(fen)
+        
+        try:
+            # Parse the user's move
+            user_move = board.parse_san(move)
+            user_move_uci = user_move.uci()
+            
+            # Check if it matches the solution
+            if user_move_uci == solution_uci:
+                # Correct! Apply the move and show the mate
+                board.push(user_move)
+                
+                # Verify it's checkmate
+                if board.is_checkmate():
+                    message = f"🎉 Correct! {move} is checkmate!\n\n"
+                    message += f"Brilliant! You found the winning move.\n\n"
+                    message += f"Would you like to try another puzzle? Use chess_puzzle to get a new one!"
+                    
+                    return {
+                        "content": [{"type": "text", "text": message}],
+                        "structuredContent": {
+                            "fen": board.fen(),
+                            "correct": True,
+                            "status": "checkmate",
+                            "turn": "black",
+                            "puzzle_solved": True
+                        },
+                        "_meta": {
+                            "puzzle_id": puzzle_id,
+                            "solution": move
+                        }
+                    }
+                else:
+                    # This shouldn't happen with correct puzzle data
+                    message = f"✅ That's the correct move ({move}), but let me verify...\n\n"
+                    message += f"The position after your move is:\n{board.fen()}"
+                    
+                    return {
+                        "content": [{"type": "text", "text": message}],
+                        "structuredContent": {
+                            "fen": board.fen(),
+                            "correct": True,
+                            "status": get_game_status(board),
+                            "turn": "white" if board.turn == chess.WHITE else "black"
+                        }
+                    }
+            else:
+                # Incorrect move
+                message = f"❌ Not quite! {move} is not the solution.\n\n"
+                message += f"💡 Try again! Look for a move that delivers checkmate in one.\n\n"
+                message += f"The puzzle is still set up - try a different move!"
+                
+                return {
+                    "content": [{"type": "text", "text": message}],
+                    "structuredContent": {
+                        "fen": fen,  # Return original puzzle position
+                        "correct": False,
+                        "puzzle_id": puzzle_id,
+                        "turn": "white",
+                        "status": "puzzle"
+                    },
+                    "_meta": {
+                        "puzzle_id": puzzle_id,
+                        "attempted_move": move
+                    }
+                }
+        
+        except ValueError as e:
+            # Invalid move notation
+            message = f"❌ Invalid move: {move}\n\n"
+            message += f"Error: {str(e)}\n\n"
+            message += f"Please use standard algebraic notation (e.g., Qg7, Ra8, Nf3)"
+            
+            return {
+                "content": [{"type": "text", "text": message}],
+                "structuredContent": {
+                    "fen": fen,
+                    "error": "invalid_move",
+                    "puzzle_id": puzzle_id
+                }
+            }
+    
+    except Exception as e:
+        return {
+            "content": [{"type": "text", "text": f"❌ Error checking solution: {str(e)}"}],
+            "structuredContent": {"error": str(e)}
+        }
 
 
 # Register the HTML widget resource

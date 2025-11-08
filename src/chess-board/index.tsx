@@ -55,6 +55,36 @@ const ChessBoardWidget: React.FC = () => {
     }
   }, [toolOutput, chess]);
 
+  // Handle piece drop - validate move and send to chat
+  const onPieceDrop = (sourceSquare: string, targetSquare: string) => {
+    try {
+      // Try to make the move
+      const move = chess.move({
+        from: sourceSquare,
+        to: targetSquare,
+        promotion: 'q' // Always promote to queen for simplicity
+      });
+
+      if (move === null) {
+        // Illegal move
+        return false;
+      }
+
+      // Send move to chat as user message
+      if (window.openai?.sendFollowUpMessage) {
+        window.openai.sendFollowUpMessage({ 
+          prompt: move.san // Send move in algebraic notation (e.g., "e4", "Nf3")
+        });
+      }
+
+      // Move was valid
+      return true;
+    } catch (error) {
+      console.error("Error making move:", error);
+      return false;
+    }
+  };
+
   // Update move history from metadata
   useEffect(() => {
     if (toolResponseMetadata?.move_history_list) {
@@ -170,7 +200,8 @@ const ChessBoardWidget: React.FC = () => {
           boardOrientation={boardOrientation}
           customDarkSquareStyle={{ backgroundColor: darkSquareColor }}
           customLightSquareStyle={{ backgroundColor: lightSquareColor }}
-          arePiecesDraggable={false}
+          arePiecesDraggable={true}
+          onPieceDrop={onPieceDrop}
           boardWidth={Math.min(560, window.innerWidth - 80)}
         />
       </div>
@@ -295,7 +326,8 @@ const ChessBoardWidget: React.FC = () => {
       >
         <strong>How to play:</strong>
         <ul style={{ margin: "8px 0 0 0", paddingLeft: "20px" }}>
-          <li>Type your move in chat (e.g., "e4", "Nf3", "O-O")</li>
+          <li>Drag and drop pieces to make a move</li>
+          <li>Or type your move in chat (e.g., "e4", "Nf3", "O-O")</li>
           <li>ChatGPT can suggest the next move</li>
           <li>Click "Ask Stockfish" for engine analysis</li>
           <li>Use "chess_status" to check game info</li>
