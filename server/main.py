@@ -295,7 +295,7 @@ def chess_move(move: str, fen: str = None) -> dict:
         "openai/toolInvocation/invoked": "Analysis complete"
     }
 )
-def chess_stockfish(depth: int = 15, fen: str = None) -> dict:
+def chess_stockfish(depth: int = 10, fen: str = None) -> dict:
     """
     Analyze the current position using Stockfish engine.
     
@@ -394,9 +394,254 @@ def chess_stockfish(depth: int = 15, fen: str = None) -> dict:
 
 
 @mcp.tool(
+    name="chess_play_move",
+    title="Make a chess move against Stockfish",
+    description="Make a chess move as White against Stockfish. Stockfish will automatically respond as Black. You are an engaging chess coach - provide tips, commentary, and playful taunts about both moves.",
+    annotations={
+        "readOnlyHint": False,
+        "openai/outputTemplate": "ui://widget/chess-board.html",
+        "openai/toolInvocation/invoking": "Playing your move and Stockfish is thinking...",
+        "openai/toolInvocation/invoked": "Stockfish has responded!",
+        "openai/widgetAccessible": True
+    }
+)
+def chess_play_move(move: str, fen: str = None, depth: int = 10) -> dict:
+    """
+    Make a chess move as White against Stockfish engine.
+    
+    Args:
+        move: User's move in algebraic notation (e.g., "e4", "Nf3")
+        fen: Optional FEN string representing current position. If not provided, uses starting position.
+        depth: Stockfish analysis depth (default: 10 for fast response)
+    
+    Returns:
+        Dictionary containing both moves (user's and Stockfish's) with game state and coaching hints
+    """
+    # Create board from FEN or use starting position
+    try:
+        if fen:
+            current_game = chess.Board(fen)
+        else:
+            current_game = chess.Board()
+    except ValueError as e:
+        return {
+            "content": [{"type": "text", "text": f"Invalid FEN: {str(e)}"}],
+            "structuredContent": {"error": "invalid_fen"}
+        }
+    
+    # Verify it's White's turn
+    if current_game.turn != chess.WHITE:
+        return {
+            "content": [{"type": "text", "text": "It's not White's turn! Stockfish plays as Black."}],
+            "structuredContent": {"error": "wrong_turn", "turn": "black"}
+        }
+    
+    # Apply user's move
+    try:
+        user_move_obj = current_game.parse_san(move)
+        current_game.push(user_move_obj)
+        user_move_san = move
+    except ValueError as e:
+        # Get legal moves to help user
+        legal_moves = [current_game.san(m) for m in current_game.legal_moves]
+        return {
+            "content": [{"type": "text", "text": f"Illegal move: {move}. Legal moves: {', '.join(legal_moves[:10])}"}],
+            "structuredContent": {
+                "error": "illegal_move",
+                "attempted_move": move,
+                "legal_moves": legal_moves[:50]
+            }
+        }
+    
+    # Check if game ended after user's move
+    user_move_status = get_game_status(current_game)
+    if user_move_status in ["checkmate", "stalemate", "draw_insufficient_material"]:
+        message = f"You played {user_move_san}. "
+        if user_move_status == "checkmate":
+            message += "Checkmate! You win! 🎉"
+        elif user_move_status == "stalemate":
+            message += "Stalemate! It's a draw."
+        else:
+            message += "Draw by insufficient material."
+        
+        return {
+            "content": [{"type": "text", "text": message}],
+            "structuredContent": {
+                "user_move": user_move_san,
+                "stockfish_move": None,
+                "fen": current_game.fen(),
+                "status": user_move_status,
+                "turn": "white" if current_game.turn == chess.WHITE else "black"
+            }
+        }
+    
+    # Get Stockfish's response
+    try:
+        import stockfish as sf
+        
+        # Check if Stockfish exists
+        stockfish_path = STOCKFISH_PATH
+        if not Path(stockfish_path).exists():
+            # Try alternative paths
+            alternatives = [
+                "/usr/local/bin/stockfish",
+                "/usr/bin/stockfish",
+                "/opt/homebrew/Cellar/stockfish/16/bin/stockfish",
+                "/opt/homebrew/Cellar/stockfish/17/bin/stockfish"
+            ]
+            for alt in alternatives:
+                if Path(alt).exists():
+                    stockfish_path = alt
+                    break
+            else:
+                return {
+                    "content": [{"type": "text", "text": f"You played {user_move_san}, but Stockfish is not available. Please install it with: brew install stockfish"}],
+                    "structuredContent": {
+                        "error": "Stockfish not found",
+                        "user_move": user_move_san,
+                        "fen": current_game.fen()
+                    }
+                }
+        
+        # Initialize Stockfish
+        engine = sf.Stockfish(path=stockfish_path)
+        engine.set_depth(depth)
+        engine.set_fen_position(current_game.fen())
+        
+        # Get evaluation before Stockfish's move
+        eval_before = engine.get_evaluation()
+        
+        # Get Stockfish's best move
+        stockfish_move_uci = engine.get_best_move()
+        
+        if not stockfish_move_uci:
+            # No legal moves for Black (should not happen, but handle it)
+            return {
+                "content": [{"type": "text", "text": f"You played {user_move_san}. Game over!"}],
+                "structuredContent": {
+                    "user_move": user_move_san,
+                    "stockfish_move": None,
+                    "fen": current_game.fen(),
+                    "status": user_move_status,
+                    "turn": "white" if current_game.turn == chess.WHITE else "black"
+                }
+            }
+        
+        # Convert UCI to SAN and apply Stockfish's move
+        stockfish_move_obj = chess.Move.from_uci(stockfish_move_uci)
+        stockfish_move_san = current_game.san(stockfish_move_obj)
+        current_game.push(stockfish_move_obj)
+        
+        # Get final game status after Stockfish's move
+        final_status = get_game_status(current_game)
+        
+        # Get evaluation after Stockfish's move
+        engine.set_fen_position(current_game.fen())
+        eval_after = engine.get_evaluation()
+        
+        # Format evaluation for display
+        def format_eval(evaluation):
+            if evaluation["type"] == "mate":
+                mate_in = evaluation["value"]
+                if mate_in > 0:
+                    return f"Mate in {mate_in}"
+                else:
+                    return f"Mate in {abs(mate_in)}"
+            else:
+                centipawns = evaluation["value"]
+                eval_text = f"{centipawns / 100:.2f}"
+                if centipawns > 0:
+                    eval_text = f"+{eval_text}"
+                return eval_text
+        
+        eval_text = format_eval(eval_after)
+        
+        # Determine coaching hints based on position
+        coaching_hints = {
+            "evaluation": eval_text,
+            "depth": depth
+        }
+        
+        # Detect tactical themes
+        if current_game.is_check():
+            coaching_hints["tactical_themes"] = ["check"]
+        
+        # Detect evaluation swings
+        if eval_before["type"] == "cp" and eval_after["type"] == "cp":
+            eval_change = eval_after["value"] - eval_before["value"]
+            coaching_hints["evaluation_change"] = eval_change / 100.0
+            
+            if abs(eval_change) > 200:  # Significant swing (2+ pawns)
+                if eval_change < -200:
+                    coaching_hints["position_note"] = "blunder_detected"
+                elif eval_change > 200:
+                    coaching_hints["position_note"] = "excellent_move"
+        
+        # Build response message
+        message = f"You played {user_move_san}. Stockfish responded with {stockfish_move_san}. "
+        
+        if final_status == "checkmate":
+            winner = "Black" if current_game.turn == chess.WHITE else "White"
+            message += f"Checkmate! {winner} wins!"
+        elif final_status == "check":
+            message += "Check!"
+        elif final_status == "stalemate":
+            message += "Stalemate! It's a draw."
+        else:
+            message += f"Position evaluation: {eval_text}"
+        
+        # Get legal moves for next turn
+        legal_moves = [current_game.san(m) for m in current_game.legal_moves]
+        
+        return {
+            "content": [{"type": "text", "text": message}],
+            "structuredContent": {
+                "user_move": user_move_san,
+                "stockfish_move": stockfish_move_san,
+                "fen": current_game.fen(),
+                "evaluation": eval_text,
+                "status": final_status,
+                "turn": "white" if current_game.turn == chess.WHITE else "black",
+                "is_check": current_game.is_check(),
+                "is_checkmate": current_game.is_checkmate(),
+                "is_stalemate": current_game.is_stalemate()
+            },
+            "_meta": {
+                "coaching_hints": coaching_hints,
+                "legal_moves": legal_moves[:50],
+                "full_state": {
+                    "user_move": user_move_san,
+                    "stockfish_move": stockfish_move_san,
+                    "stockfish_move_uci": stockfish_move_uci,
+                    "legal_moves_count": len(legal_moves)
+                }
+            }
+        }
+        
+    except ImportError:
+        return {
+            "content": [{"type": "text", "text": f"You played {user_move_san}, but Stockfish library is not available. Install with: pip install stockfish"}],
+            "structuredContent": {
+                "error": "Stockfish library not installed",
+                "user_move": user_move_san,
+                "fen": current_game.fen()
+            }
+        }
+    except Exception as e:
+        return {
+            "content": [{"type": "text", "text": f"You played {user_move_san}. Error getting Stockfish response: {str(e)}"}],
+            "structuredContent": {
+                "error": str(e),
+                "user_move": user_move_san,
+                "fen": current_game.fen()
+            }
+        }
+
+
+@mcp.tool(
     name="chess_reset",
     title="Reset chess game",
-    description="Reset the game to starting position",
+    description="Reset the game to starting position. Start a fresh game vs Stockfish. Encourage the user and set an upbeat tone.",
     annotations={
         "readOnlyHint": False,
         "openai/outputTemplate": "ui://widget/chess-board.html",
@@ -849,6 +1094,44 @@ async def list_tools() -> List[types.Tool]:
             }
         ),
         types.Tool(
+            name="chess_play_move",
+            title="Make a chess move against Stockfish",
+            description="Make a chess move as White against Stockfish. Stockfish will automatically respond as Black. You are an engaging chess coach - provide tips, commentary, and playful taunts about both moves.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "move": {
+                        "type": "string",
+                        "description": "User's move in standard algebraic notation (e.g., e4, Nf3, O-O)"
+                    },
+                    "fen": {
+                        "type": "string",
+                        "description": "Optional FEN string representing current position. If not provided, uses starting position."
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "Stockfish analysis depth (default: 10 for fast response)",
+                        "default": 10
+                    }
+                },
+                "required": ["move"],
+                "additionalProperties": False
+            },
+            _meta={
+                "openai/outputTemplate": "ui://widget/chess-board.html",
+                "openai/widgetAccessible": True,
+                "openai/resultCanProduceWidget": True,
+                "openai/toolInvocation/invoking": "Playing your move and Stockfish is thinking...",
+                "openai/toolInvocation/invoked": "Stockfish has responded!",
+                "securitySchemes": [{"type": "noauth"}]
+            },
+            annotations={
+                "readOnlyHint": False,
+                "destructiveHint": False,
+                "openWorldHint": False,
+            }
+        ),
+        types.Tool(
             name="chess_status",
             title="Get game status",
             description="Get current game status, turn, player information, and move count",
@@ -1085,6 +1368,12 @@ async def handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
             result = chess_move(
                 arguments.get("move", ""),
                 arguments.get("fen")
+            )
+        elif tool_name == "chess_play_move":
+            result = chess_play_move(
+                arguments.get("move", ""),
+                arguments.get("fen"),
+                arguments.get("depth", 10)
             )
         elif tool_name == "chess_status":
             result = chess_status(arguments.get("fen"))

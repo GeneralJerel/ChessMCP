@@ -6,9 +6,9 @@ A ChatGPT Chess application built with OpenAI Apps SDK, allowing you to play che
 
 ## Features
 
-- 🎮 Play chess using algebraic notation (e4, Nf3, O-O, etc.)
+- 🎮 **Play against Stockfish engine** - Make a move and Stockfish responds automatically!
+- 🎓 **AI Chess Coach** - ChatGPT provides engaging commentary, tips, and playful taunts
 - 📊 Interactive chess board widget in ChatGPT
-- 🤖 AI opponent suggestions (ChatGPT can play moves)
 - 🔍 Stockfish engine analysis integration
 - 📝 Move history tracking
 - ✅ Full move validation and game state management
@@ -182,6 +182,32 @@ ngrok http 8000
 ```
 
 ## Usage
+
+### 🎮 Play vs Stockfish (Default Mode)
+
+**New!** The chess MCP now features automatic play against Stockfish with ChatGPT as your coach:
+
+**How it works:**
+1. Make your move (as White) via chat or widget
+2. Stockfish automatically responds (as Black)
+3. ChatGPT provides engaging commentary and coaching
+
+**Example:**
+```
+You: "e4"
+→ Stockfish responds: e5
+→ ChatGPT: "Bold opening choice! Stockfish strikes back with the 
+            Sicilian Defense - one of the sharpest responses!"
+```
+
+**Quick start:**
+- Type moves: "e4", "Nf3", "Bc4"
+- Or drag pieces on the board widget
+- Reset anytime: "Start a new game"
+
+📖 See [PLAY_VS_STOCKFISH.md](PLAY_VS_STOCKFISH.md) for complete documentation.
+
+---
 
 ### Starting a Game
 

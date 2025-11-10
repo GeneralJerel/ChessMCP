@@ -14,7 +14,7 @@ os.environ['GOOGLE_CLIENT_SECRET'] = 'test'
 os.environ['MCP_SERVER_URL'] = 'http://localhost:8000'
 
 # Import chess functions
-from main import chess_move, chess_status, chess_reset, chess_puzzle, chess_stockfish
+from main import chess_move, chess_multimove, chess_status, chess_reset, chess_puzzle, chess_check_puzzle_solution, chess_stockfish
 
 # Mock user context for local testing
 from auth_middleware import UserContext, current_user_ctx
@@ -35,18 +35,23 @@ def print_help():
 ♟️  Chess MCP Local Tester - Available Commands:
 
   move <notation>     Make a move (e.g., move e4, move Nf3)
+  multimove <moves>   Make multiple moves (e.g., multimove e4 c5, multimove 1. e4 c5 2. Nf3)
   status              Show game status
   reset               Reset the game
-  puzzle [difficulty] Load a puzzle (easy/medium/hard)
+  puzzle [id]         Load a puzzle (optionally specify ID 1-25000)
+  check <move>        Check if a move solves the current puzzle
   stockfish [depth]   Get Stockfish analysis
   help                Show this help
   quit                Exit
 
 Examples:
   move e4
-  move Nf3
+  multimove e4 c5
+  multimove 1. e4 c5 2. Nf3 d6
   status
-  puzzle medium
+  puzzle
+  puzzle 42
+  check Qg7
   stockfish 20
 """)
 
@@ -75,6 +80,10 @@ def main():
     print("="*60)
     print("Type 'help' for commands, 'quit' to exit")
     print("="*60)
+    
+    # Track current puzzle state
+    current_puzzle_id = None
+    current_puzzle_fen = None
     
     # Show initial status
     print("\n📊 Initial game status...")
@@ -114,6 +123,18 @@ def main():
                     except Exception as e:
                         print(f"❌ Error: {e}")
             
+            elif cmd == "multimove":
+                if not args:
+                    print("❌ Usage: multimove <moves> (e.g., multimove e4 c5, multimove 1. e4 c5 2. Nf3)")
+                else:
+                    moves = " ".join(args)
+                    print(f"\n♟️  Making moves: {moves}")
+                    try:
+                        result = chess_multimove(moves)
+                        format_result(result)
+                    except Exception as e:
+                        print(f"❌ Error: {e}")
+            
             elif cmd == "status":
                 print("\n📊 Game status...")
                 try:
@@ -131,14 +152,37 @@ def main():
                     print(f"❌ Error: {e}")
             
             elif cmd == "puzzle":
-                difficulty = args[0] if args else "easy"
-                if difficulty not in ["easy", "medium", "hard"]:
-                    print(f"❌ Invalid difficulty. Use: easy, medium, or hard")
+                puzzle_id_arg = int(args[0]) if args else None
+                print(f"\n🧩 Loading puzzle{f' #{puzzle_id_arg}' if puzzle_id_arg else ''}...")
+                try:
+                    result = chess_puzzle(puzzle_id_arg)
+                    format_result(result)
+                    # Store puzzle state for check command
+                    if "structuredContent" in result:
+                        sc = result["structuredContent"]
+                        current_puzzle_id = sc.get("puzzle_id")
+                        current_puzzle_fen = sc.get("fen")
+                        if current_puzzle_id:
+                            print(f"\n💡 Use 'check <move>' to submit your solution")
+                except Exception as e:
+                    print(f"❌ Error: {e}")
+            
+            elif cmd == "check":
+                if not args:
+                    print("❌ Usage: check <move> (e.g., check Qg7)")
+                elif current_puzzle_id is None or current_puzzle_fen is None:
+                    print("❌ No puzzle loaded. Use 'puzzle' to load one first.")
                 else:
-                    print(f"\n🧩 Loading {difficulty} puzzle...")
+                    move = args[0]
+                    print(f"\n🔍 Checking move: {move}")
                     try:
-                        result = chess_puzzle(difficulty)
+                        result = chess_check_puzzle_solution(move, current_puzzle_id, current_puzzle_fen)
                         format_result(result)
+                        # If incorrect, puzzle state remains the same
+                        # If correct, clear puzzle state
+                        if "structuredContent" in result and result["structuredContent"].get("correct"):
+                            current_puzzle_id = None
+                            current_puzzle_fen = None
                     except Exception as e:
                         print(f"❌ Error: {e}")
             

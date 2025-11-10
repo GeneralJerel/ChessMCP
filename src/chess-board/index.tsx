@@ -35,9 +35,52 @@ const ChessBoardWidget: React.FC = () => {
   const [currentTurn, setCurrentTurn] = useState<string>("white");
   const [analysis, setAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+  const [highlightedSquares, setHighlightedSquares] = useState<{[square: string]: any}>({});
 
   // Chess instance for local validation
   const chess = useMemo(() => new Chess(), []);
+
+  // Calculate legal moves for a square
+  const getMoveOptions = (square: string) => {
+    const moves = chess.moves({ square, verbose: true });
+    if (moves.length === 0) {
+      return {};
+    }
+
+    const newSquares: {[key: string]: any} = {};
+    moves.forEach((move) => {
+      newSquares[move.to] = {
+        background: "radial-gradient(circle, rgba(0,0,0,.1) 25%, transparent 25%)",
+        borderRadius: "50%"
+      };
+    });
+    return newSquares;
+  };
+
+  // Handle square click for piece selection
+  const onSquareClick = (square: string) => {
+    // If no square selected, select this square and show legal moves
+    if (!selectedSquare) {
+      const moves = getMoveOptions(square);
+      if (Object.keys(moves).length > 0) {
+        setSelectedSquare(square);
+        setHighlightedSquares(moves);
+      }
+      return;
+    }
+
+    // If clicking same square, deselect
+    if (selectedSquare === square) {
+      setSelectedSquare(null);
+      setHighlightedSquares({});
+      return;
+    }
+
+    // Otherwise, clear selection
+    setSelectedSquare(null);
+    setHighlightedSquares({});
+  };
 
   // Update board when tool output changes
   useEffect(() => {
@@ -45,6 +88,9 @@ const ChessBoardWidget: React.FC = () => {
       if (toolOutput.fen) {
         setPosition(toolOutput.fen);
         chess.load(toolOutput.fen);
+        // Clear highlights when board updates
+        setSelectedSquare(null);
+        setHighlightedSquares({});
       }
       if (toolOutput.status) {
         setGameStatus(toolOutput.status);
@@ -58,7 +104,10 @@ const ChessBoardWidget: React.FC = () => {
   // Handle piece drop - validate move and send to chat
   const onPieceDrop = (sourceSquare: string, targetSquare: string) => {
     try {
-      // Try to make the move
+      // Save current position before making the move
+      const currentFen = chess.fen();
+      
+      // Try to make the move locally for validation
       const move = chess.move({
         from: sourceSquare,
         to: targetSquare,
@@ -70,10 +119,18 @@ const ChessBoardWidget: React.FC = () => {
         return false;
       }
 
-      // Send move to chat as user message
-      if (window.openai?.sendFollowUpMessage) {
-        window.openai.sendFollowUpMessage({ 
-          prompt: move.san // Send move in algebraic notation (e.g., "e4", "Nf3")
+      // Undo the local move - the server will handle both moves
+      chess.undo();
+
+      // Clear highlights
+      setSelectedSquare(null);
+      setHighlightedSquares({});
+
+      // Call chess_play_move tool to play against Stockfish
+      if (window.openai?.callTool) {
+        window.openai.callTool("chess_play_move", { 
+          move: move.san, // User's move in algebraic notation (e.g., "e4", "Nf3")
+          fen: currentFen // Current position before any moves
         });
       }
 
@@ -165,6 +222,14 @@ const ChessBoardWidget: React.FC = () => {
   const darkSquareColor = "#b58863";
   const lightSquareColor = "#f0d9b5";
 
+  // Combine highlighted squares with selected square highlight
+  const customSquareStyles = {
+    ...highlightedSquares,
+    ...(selectedSquare && {
+      [selectedSquare]: { backgroundColor: "rgba(255, 255, 0, 0.4)" }
+    })
+  };
+
   return (
     <div
       style={{
@@ -200,8 +265,10 @@ const ChessBoardWidget: React.FC = () => {
           boardOrientation={boardOrientation}
           customDarkSquareStyle={{ backgroundColor: darkSquareColor }}
           customLightSquareStyle={{ backgroundColor: lightSquareColor }}
+          customSquareStyles={customSquareStyles}
           arePiecesDraggable={true}
           onPieceDrop={onPieceDrop}
+          onSquareClick={onSquareClick}
           boardWidth={Math.min(560, window.innerWidth - 80)}
         />
       </div>
@@ -326,6 +393,7 @@ const ChessBoardWidget: React.FC = () => {
       >
         <strong>How to play:</strong>
         <ul style={{ margin: "8px 0 0 0", paddingLeft: "20px" }}>
+          <li>Click a piece to see its legal moves</li>
           <li>Drag and drop pieces to make a move</li>
           <li>Or type your move in chat (e.g., "e4", "Nf3", "O-O")</li>
           <li>ChatGPT can suggest the next move</li>
