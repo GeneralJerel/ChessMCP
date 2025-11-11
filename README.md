@@ -4,6 +4,25 @@ A ChatGPT Chess application built with OpenAI Apps SDK, allowing you to play che
 
 **Now following OpenAI Apps SDK best practices!**
 
+## 🎮 Live Demo
+
+<div align="center">
+  
+### Play Chess Directly in ChatGPT
+
+<img src="docs/assets/chess-app-screenshot.png" alt="Chess game running in ChatGPT" width="800"/>
+
+*Interactive chess board with drag & drop, move history navigation, and Stockfish engine integration*
+
+**Key Features Shown:**
+- ♟️ Full chess board rendered inline in ChatGPT
+- 🎯 "White to move" status indicator
+- 🔄 Move navigation controls (previous/next/start/end)
+- 🆕 "New Game" and "Mate in 1" puzzle buttons
+- 🤖 Plays against Stockfish engine automatically
+
+</div>
+
 ## Features
 
 - 🎮 **Play against Stockfish engine** - Make a move and Stockfish responds automatically!
