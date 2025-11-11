@@ -24,38 +24,82 @@ const ChessBoardWidget: React.FC = () => {
 
   // Widget state for persistent preferences
   const [widgetState, setWidgetState] = useWidgetState<ChessWidgetState>({
+    lastPosition: "start",
     lastDepth: 15,
     analysisVisible: false,
+    currentMoveIndex: null,
   });
 
-  // Local component state
-  const [position, setPosition] = useState<string>("start");
+  // Local component state - initialize from widgetState first, then toolOutput, then "start"
+  const [position, setPosition] = useState<string>(() => {
+    if (widgetState?.lastPosition) {
+      return widgetState.lastPosition;
+    }
+    if (toolOutput?.fen) {
+      return toolOutput.fen;
+    }
+    return "start";
+  });
   const [moveHistory, setMoveHistory] = useState<string[]>([]);
   const [gameStatus, setGameStatus] = useState<string>("ongoing");
   const [currentTurn, setCurrentTurn] = useState<string>("white");
-  const [analysis, setAnalysis] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [highlightedSquares, setHighlightedSquares] = useState<{[square: string]: any}>({});
+  const [startingFen, setStartingFen] = useState<string>("start");
 
   // Chess instance for local validation
   const chess = useMemo(() => new Chess(), []);
 
   // Calculate legal moves for a square
   const getMoveOptions = (square: string) => {
-    const moves = chess.moves({ square, verbose: true });
+    const moves = chess.moves({ square: square as any, verbose: true }) as any[];
     if (moves.length === 0) {
       return {};
     }
 
     const newSquares: {[key: string]: any} = {};
-    moves.forEach((move) => {
+    moves.forEach((move: any) => {
       newSquares[move.to] = {
         background: "radial-gradient(circle, rgba(0,0,0,.1) 25%, transparent 25%)",
         borderRadius: "50%"
       };
     });
     return newSquares;
+  };
+
+  // Replay moves up to a specific index
+  const replayToMove = (moveIndex: number | null): string => {
+    // If moveIndex is null or >= moveHistory.length, return the current position
+    if (moveIndex === null || moveIndex >= moveHistory.length) {
+      return toolOutput?.fen || startingFen;
+    }
+
+    // Create a temporary chess instance
+    const tempChess = new Chess();
+    
+    // Load the starting position
+    try {
+      if (startingFen === "start") {
+        tempChess.reset();
+      } else {
+        tempChess.load(startingFen);
+      }
+    } catch (error) {
+      console.error("Error loading starting FEN:", error);
+      return startingFen;
+    }
+
+    // Replay moves up to the specified index (inclusive)
+    for (let i = 0; i <= moveIndex && i < moveHistory.length; i++) {
+      try {
+        tempChess.move(moveHistory[i]);
+      } catch (error) {
+        console.error(`Error replaying move ${i} (${moveHistory[i]}):`, error);
+        break;
+      }
+    }
+
+    return tempChess.fen();
   };
 
   // Handle square click for piece selection
@@ -77,9 +121,48 @@ const ChessBoardWidget: React.FC = () => {
       return;
     }
 
-    // Otherwise, clear selection
-    setSelectedSquare(null);
-    setHighlightedSquares({});
+    // If clicking a highlighted destination square, make the move
+    if (highlightedSquares[square]) {
+      // Save current position before making the move
+      const currentFen = chess.fen();
+      
+      // Try to make the move locally for validation
+      const move = chess.move({
+        from: selectedSquare,
+        to: square,
+        promotion: 'q' // Always promote to queen for simplicity
+      });
+
+      if (move) {
+        // Undo the local move - the server will handle both moves
+        chess.undo();
+
+        // Clear highlights
+        setSelectedSquare(null);
+        setHighlightedSquares({});
+
+        // Call chess_play_move tool to play against Stockfish
+        if (window.openai?.callTool) {
+          window.openai.callTool("chess_play_move", { 
+            move: move.san,
+            fen: currentFen,
+            move_history: JSON.stringify(moveHistory)
+          });
+        }
+      }
+      return;
+    }
+
+    // Otherwise, check if clicking another piece (switch selection)
+    const newMoves = getMoveOptions(square);
+    if (Object.keys(newMoves).length > 0) {
+      setSelectedSquare(square);
+      setHighlightedSquares(newMoves);
+    } else {
+      // Clicked empty square or opponent piece with no selection - clear
+      setSelectedSquare(null);
+      setHighlightedSquares({});
+    }
   };
 
   // Update board when tool output changes
@@ -88,9 +171,16 @@ const ChessBoardWidget: React.FC = () => {
       if (toolOutput.fen) {
         setPosition(toolOutput.fen);
         chess.load(toolOutput.fen);
+        // Update starting FEN for future replays
+        // Only update if we're at the current position (not viewing history)
+        if (widgetState?.currentMoveIndex === null || widgetState?.currentMoveIndex === undefined) {
+          setStartingFen(toolOutput.fen);
+        }
         // Clear highlights when board updates
         setSelectedSquare(null);
         setHighlightedSquares({});
+        // Persist position in widgetState and reset to current position when new tool output arrives
+        setWidgetState(prev => ({ ...prev, lastPosition: toolOutput.fen, currentMoveIndex: null }));
       }
       if (toolOutput.status) {
         setGameStatus(toolOutput.status);
@@ -99,7 +189,20 @@ const ChessBoardWidget: React.FC = () => {
         setCurrentTurn(toolOutput.turn);
       }
     }
-  }, [toolOutput, chess]);
+  }, [toolOutput]);
+
+  // Update position when navigating through move history
+  useEffect(() => {
+    const moveIndex = widgetState?.currentMoveIndex;
+    if (moveHistory.length > 0) {
+      const newPosition = replayToMove(moveIndex ?? null);
+      setPosition(newPosition);
+      chess.load(newPosition);
+      // Clear highlights when navigating
+      setSelectedSquare(null);
+      setHighlightedSquares({});
+    }
+  }, [widgetState?.currentMoveIndex, moveHistory]);
 
   // Handle piece drop - validate move and send to chat
   const onPieceDrop = (sourceSquare: string, targetSquare: string) => {
@@ -130,7 +233,8 @@ const ChessBoardWidget: React.FC = () => {
       if (window.openai?.callTool) {
         window.openai.callTool("chess_play_move", { 
           move: move.san, // User's move in algebraic notation (e.g., "e4", "Nf3")
-          fen: currentFen // Current position before any moves
+          fen: currentFen, // Current position before any moves
+          move_history: JSON.stringify(moveHistory) // Send current move history
         });
       }
 
@@ -149,53 +253,85 @@ const ChessBoardWidget: React.FC = () => {
     }
   }, [toolResponseMetadata]);
 
-  // Request Stockfish analysis
-  const handleStockfishAnalysis = async () => {
-    if (!window.openai?.callTool) {
-      console.error("window.openai.callTool not available");
-      return;
-    }
-
-    setIsAnalyzing(true);
-    setAnalysis(null);
-
-    try {
-      const depth = widgetState?.lastDepth || 15;
-      const result = await window.openai.callTool("chess_stockfish", { depth });
-
-      if (result?.content?.[0]?.text) {
-        setAnalysis(result.content[0].text);
-      } else if (result?.structuredContent?.best_move) {
-        const move = result.structuredContent.best_move;
-        const eval_text = result.structuredContent.evaluation;
-        setAnalysis(`Best move: ${move} (${eval_text})`);
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Only handle if we have moves and not typing in an input
+      if (moveHistory.length === 0) return;
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+        return;
       }
 
-      // Update widget state
-      setWidgetState({ ...widgetState, analysisVisible: true });
-    } catch (error) {
-      console.error("Error calling Stockfish:", error);
-      setAnalysis("Error analyzing position");
-    } finally {
-      setIsAnalyzing(false);
+      switch (event.key) {
+        case "ArrowLeft":
+          event.preventDefault();
+          goToPrevious();
+          break;
+        case "ArrowRight":
+          event.preventDefault();
+          goToNext();
+          break;
+        case "Home":
+          event.preventDefault();
+          goToStart();
+          break;
+        case "End":
+          event.preventDefault();
+          goToEnd();
+          break;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [moveHistory.length, widgetState?.currentMoveIndex]);
+
+
+  // Navigation functions
+  const goToStart = () => {
+    setWidgetState({ ...widgetState, currentMoveIndex: -1 });
+  };
+
+  const goToPrevious = () => {
+    const currentIndex = widgetState?.currentMoveIndex ?? moveHistory.length - 1;
+    const newIndex = Math.max(-1, currentIndex - 1);
+    setWidgetState({ ...widgetState, currentMoveIndex: newIndex });
+  };
+
+  const goToNext = () => {
+    const currentIndex = widgetState?.currentMoveIndex ?? moveHistory.length - 1;
+    const newIndex = Math.min(moveHistory.length - 1, currentIndex + 1);
+    setWidgetState({ ...widgetState, currentMoveIndex: newIndex });
+  };
+
+  const goToEnd = () => {
+    setWidgetState({ ...widgetState, currentMoveIndex: null });
+  };
+
+  const goToMove = (moveIndex: number) => {
+    setWidgetState({ ...widgetState, currentMoveIndex: moveIndex });
+  };
+
+  // Game control functions
+  const handleNewGame = () => {
+    if (window.openai?.callTool) {
+      window.openai.callTool("chess_reset", {});
     }
   };
 
-  // Format move history for display
-  const formattedMoveHistory = useMemo(() => {
-    const formatted: string[] = [];
-    for (let i = 0; i < moveHistory.length; i += 2) {
-      const moveNum = Math.floor(i / 2) + 1;
-      const whiteMove = moveHistory[i];
-      const blackMove = moveHistory[i + 1];
-      if (blackMove) {
-        formatted.push(`${moveNum}. ${whiteMove} ${blackMove}`);
-      } else {
-        formatted.push(`${moveNum}. ${whiteMove}`);
-      }
+  const handleMateInOne = () => {
+    if (window.openai?.callTool) {
+      window.openai.callTool("chess_puzzle", {});
     }
-    return formatted;
-  }, [moveHistory]);
+  };
+
+  // Check if we're viewing a past position
+  const isViewingHistory = useMemo(() => {
+    const currentIndex = widgetState?.currentMoveIndex;
+    return currentIndex !== null && currentIndex !== undefined && currentIndex < moveHistory.length - 1;
+  }, [widgetState?.currentMoveIndex, moveHistory.length]);
 
   // Get status display text
   const getStatusText = () => {
@@ -266,20 +402,121 @@ const ChessBoardWidget: React.FC = () => {
           customDarkSquareStyle={{ backgroundColor: darkSquareColor }}
           customLightSquareStyle={{ backgroundColor: lightSquareColor }}
           customSquareStyles={customSquareStyles}
-          arePiecesDraggable={true}
+          arePiecesDraggable={!isViewingHistory}
           onPieceDrop={onPieceDrop}
           onSquareClick={onSquareClick}
           boardWidth={Math.min(560, window.innerWidth - 80)}
         />
       </div>
 
-      {/* Stockfish Analysis Button */}
-      <div style={{ marginBottom: "20px", textAlign: "center" }}>
+      {/* View-Only Mode Indicator */}
+      {isViewingHistory && (
+        <div
+          style={{
+            textAlign: "center",
+            fontSize: "14px",
+            fontWeight: "500",
+            marginBottom: "12px",
+            padding: "8px 12px",
+            backgroundColor: theme === "dark" ? "#3a3a2a" : "#fff4e6",
+            color: theme === "dark" ? "#ffb74d" : "#e65100",
+            borderRadius: "6px",
+            border: `1px solid ${theme === "dark" ? "#ffb74d" : "#e65100"}`,
+          }}
+        >
+          ⏸ Viewing move {(widgetState?.currentMoveIndex ?? -1) + 1} of {moveHistory.length}
+        </div>
+      )}
+
+      {/* Navigation Controls */}
+      {moveHistory.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            gap: "8px",
+            marginBottom: "20px",
+          }}
+        >
+          <button
+            onClick={goToStart}
+            disabled={(widgetState?.currentMoveIndex ?? moveHistory.length) <= -1}
+            style={{
+              padding: "8px 16px",
+              fontSize: "18px",
+              backgroundColor: theme === "dark" ? "#2a2a2a" : "#f5f5f5",
+              color: theme === "dark" ? "#ffffff" : "#000000",
+              border: `1px solid ${theme === "dark" ? "#444" : "#ddd"}`,
+              borderRadius: "6px",
+              cursor: (widgetState?.currentMoveIndex ?? moveHistory.length) <= -1 ? "not-allowed" : "pointer",
+              opacity: (widgetState?.currentMoveIndex ?? moveHistory.length) <= -1 ? 0.5 : 1,
+              transition: "all 0.2s",
+            }}
+            title="Go to start"
+          >
+            ⏮
+          </button>
+          <button
+            onClick={goToPrevious}
+            disabled={(widgetState?.currentMoveIndex ?? moveHistory.length) <= -1}
+            style={{
+              padding: "8px 16px",
+              fontSize: "18px",
+              backgroundColor: theme === "dark" ? "#2a2a2a" : "#f5f5f5",
+              color: theme === "dark" ? "#ffffff" : "#000000",
+              border: `1px solid ${theme === "dark" ? "#444" : "#ddd"}`,
+              borderRadius: "6px",
+              cursor: (widgetState?.currentMoveIndex ?? moveHistory.length) <= -1 ? "not-allowed" : "pointer",
+              opacity: (widgetState?.currentMoveIndex ?? moveHistory.length) <= -1 ? 0.5 : 1,
+              transition: "all 0.2s",
+            }}
+            title="Previous move"
+          >
+            ◀
+          </button>
+          <button
+            onClick={goToNext}
+            disabled={(widgetState?.currentMoveIndex ?? moveHistory.length - 1) >= moveHistory.length - 1}
+            style={{
+              padding: "8px 16px",
+              fontSize: "18px",
+              backgroundColor: theme === "dark" ? "#2a2a2a" : "#f5f5f5",
+              color: theme === "dark" ? "#ffffff" : "#000000",
+              border: `1px solid ${theme === "dark" ? "#444" : "#ddd"}`,
+              borderRadius: "6px",
+              cursor: (widgetState?.currentMoveIndex ?? moveHistory.length - 1) >= moveHistory.length - 1 ? "not-allowed" : "pointer",
+              opacity: (widgetState?.currentMoveIndex ?? moveHistory.length - 1) >= moveHistory.length - 1 ? 0.5 : 1,
+              transition: "all 0.2s",
+            }}
+            title="Next move"
+          >
+            ▶
+          </button>
+          <button
+            onClick={goToEnd}
+            disabled={widgetState?.currentMoveIndex === null || widgetState?.currentMoveIndex === undefined}
+            style={{
+              padding: "8px 16px",
+              fontSize: "18px",
+              backgroundColor: theme === "dark" ? "#2a2a2a" : "#f5f5f5",
+              color: theme === "dark" ? "#ffffff" : "#000000",
+              border: `1px solid ${theme === "dark" ? "#444" : "#ddd"}`,
+              borderRadius: "6px",
+              cursor: widgetState?.currentMoveIndex === null || widgetState?.currentMoveIndex === undefined ? "not-allowed" : "pointer",
+              opacity: widgetState?.currentMoveIndex === null || widgetState?.currentMoveIndex === undefined ? 0.5 : 1,
+              transition: "all 0.2s",
+            }}
+            title="Go to current position"
+          >
+            ⏭
+          </button>
+        </div>
+      )}
+
+      {/* Game Control Buttons */}
+      <div style={{ display: "flex", justifyContent: "center", gap: "12px", marginBottom: "20px" }}>
         <button
-          onClick={handleStockfishAnalysis}
-          disabled={
-            isAnalyzing || gameStatus === "checkmate" || gameStatus === "stalemate"
-          }
+          onClick={handleNewGame}
           style={{
             padding: "12px 24px",
             fontSize: "16px",
@@ -288,48 +525,45 @@ const ChessBoardWidget: React.FC = () => {
             color: "#ffffff",
             border: "none",
             borderRadius: "6px",
-            cursor: isAnalyzing ? "wait" : "pointer",
-            opacity:
-              isAnalyzing ||
-              gameStatus === "checkmate" ||
-              gameStatus === "stalemate"
-                ? 0.6
-                : 1,
+            cursor: "pointer",
             transition: "all 0.2s",
           }}
           onMouseOver={(e) => {
-            if (
-              !isAnalyzing &&
-              gameStatus !== "checkmate" &&
-              gameStatus !== "stalemate"
-            ) {
-              e.currentTarget.style.backgroundColor =
-                theme === "dark" ? "#5aafff" : "#0052a3";
-            }
+            e.currentTarget.style.backgroundColor =
+              theme === "dark" ? "#5aafff" : "#0052a3";
           }}
           onMouseOut={(e) => {
             e.currentTarget.style.backgroundColor =
               theme === "dark" ? "#4a9eff" : "#0066cc";
           }}
         >
-          {isAnalyzing ? "Analyzing..." : "Ask Stockfish"}
+          New Game
         </button>
-      </div>
-
-      {/* Analysis Result */}
-      {analysis && (
-        <div
+        <button
+          onClick={handleMateInOne}
           style={{
-            padding: "12px",
-            backgroundColor: theme === "dark" ? "#2a4a2a" : "#e8f5e9",
+            padding: "12px 24px",
+            fontSize: "16px",
+            fontWeight: "600",
+            backgroundColor: theme === "dark" ? "#ff8a65" : "#ff6f00",
+            color: "#ffffff",
+            border: "none",
             borderRadius: "6px",
-            marginBottom: "20px",
-            fontSize: "14px",
+            cursor: "pointer",
+            transition: "all 0.2s",
+          }}
+          onMouseOver={(e) => {
+            e.currentTarget.style.backgroundColor =
+              theme === "dark" ? "#ff9575" : "#e65100";
+          }}
+          onMouseOut={(e) => {
+            e.currentTarget.style.backgroundColor =
+              theme === "dark" ? "#ff8a65" : "#ff6f00";
           }}
         >
-          <strong>Engine Analysis:</strong> {analysis}
-        </div>
-      )}
+          Mate in 1
+        </button>
+      </div>
 
       {/* Move History */}
       {moveHistory.length > 0 && (
@@ -359,23 +593,63 @@ const ChessBoardWidget: React.FC = () => {
               fontFamily: "monospace",
             }}
           >
-            {formattedMoveHistory.map((move, index) => (
-              <div
-                key={index}
-                style={{
-                  padding: "4px 8px",
-                  backgroundColor:
-                    index === formattedMoveHistory.length - 1
-                      ? theme === "dark"
-                        ? "#3a3a3a"
-                        : "#e0e0e0"
-                      : "transparent",
-                  borderRadius: "4px",
-                }}
-              >
-                {move}
-              </div>
-            ))}
+            {moveHistory.map((move, moveIndex) => {
+              const pairIndex = Math.floor(moveIndex / 2);
+              const isWhiteMove = moveIndex % 2 === 0;
+              const moveNumber = pairIndex + 1;
+              const currentIndex = widgetState?.currentMoveIndex ?? moveHistory.length - 1;
+              const isCurrentMove = moveIndex === currentIndex;
+              
+              return (
+                <span key={moveIndex}>
+                  {isWhiteMove && (
+                    <span
+                      style={{
+                        color: theme === "dark" ? "#888" : "#666",
+                        marginRight: "4px",
+                      }}
+                    >
+                      {moveNumber}.
+                    </span>
+                  )}
+                  <span
+                    onClick={() => goToMove(moveIndex)}
+                    style={{
+                      padding: "2px 6px",
+                      marginRight: "4px",
+                      backgroundColor: isCurrentMove
+                        ? theme === "dark"
+                          ? "#4a9eff"
+                          : "#0066cc"
+                        : "transparent",
+                      color: isCurrentMove
+                        ? "#ffffff"
+                        : theme === "dark"
+                        ? "#ffffff"
+                        : "#000000",
+                      borderRadius: "3px",
+                      cursor: "pointer",
+                      transition: "all 0.2s",
+                    }}
+                    onMouseOver={(e) => {
+                      if (!isCurrentMove) {
+                        e.currentTarget.style.backgroundColor =
+                          theme === "dark" ? "#3a3a3a" : "#e0e0e0";
+                      }
+                    }}
+                    onMouseOut={(e) => {
+                      if (!isCurrentMove) {
+                        e.currentTarget.style.backgroundColor = "transparent";
+                      }
+                    }}
+                  >
+                    {move}
+                  </span>
+                  {!isWhiteMove && moveIndex < moveHistory.length - 1 && " "}
+                  {!isWhiteMove && <br />}
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
@@ -396,10 +670,9 @@ const ChessBoardWidget: React.FC = () => {
           <li>Click a piece to see its legal moves</li>
           <li>Drag and drop pieces to make a move</li>
           <li>Or type your move in chat (e.g., "e4", "Nf3", "O-O")</li>
-          <li>ChatGPT can suggest the next move</li>
-          <li>Click "Ask Stockfish" for engine analysis</li>
-          <li>Use "chess_status" to check game info</li>
-          <li>Use "chess_puzzle" for tactical training</li>
+          <li>Use arrow keys (←/→) to navigate through moves</li>
+          <li>Click "New Game" to start fresh</li>
+          <li>Click "Mate in 1" for puzzle practice</li>
         </ul>
       </div>
     </div>

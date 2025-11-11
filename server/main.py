@@ -405,7 +405,7 @@ def chess_stockfish(depth: int = 10, fen: str = None) -> dict:
         "openai/widgetAccessible": True
     }
 )
-def chess_play_move(move: str, fen: str = None, depth: int = 10) -> dict:
+def chess_play_move(move: str, fen: str = None, depth: int = 10, move_history: str = None) -> dict:
     """
     Make a chess move as White against Stockfish engine.
     
@@ -413,10 +413,18 @@ def chess_play_move(move: str, fen: str = None, depth: int = 10) -> dict:
         move: User's move in algebraic notation (e.g., "e4", "Nf3")
         fen: Optional FEN string representing current position. If not provided, uses starting position.
         depth: Stockfish analysis depth (default: 10 for fast response)
+        move_history: JSON string of previous moves in SAN notation
     
     Returns:
         Dictionary containing both moves (user's and Stockfish's) with game state and coaching hints
     """
+    # Parse existing move history
+    import json
+    try:
+        move_list = json.loads(move_history) if move_history else []
+    except (json.JSONDecodeError, TypeError):
+        move_list = []
+    
     # Create board from FEN or use starting position
     try:
         if fen:
@@ -593,6 +601,10 @@ def chess_play_move(move: str, fen: str = None, depth: int = 10) -> dict:
         # Get legal moves for next turn
         legal_moves = [current_game.san(m) for m in current_game.legal_moves]
         
+        # Update move history with both moves
+        move_list.append(user_move_san)
+        move_list.append(stockfish_move_san)
+        
         return {
             "content": [{"type": "text", "text": message}],
             "structuredContent": {
@@ -609,6 +621,7 @@ def chess_play_move(move: str, fen: str = None, depth: int = 10) -> dict:
             "_meta": {
                 "coaching_hints": coaching_hints,
                 "legal_moves": legal_moves[:50],
+                "move_history_list": move_list,
                 "full_state": {
                     "user_move": user_move_san,
                     "stockfish_move": stockfish_move_san,
@@ -665,6 +678,9 @@ def chess_reset() -> dict:
             "fen": starting_board.fen(),
             "status": "ongoing",
             "turn": "white"
+        },
+        "_meta": {
+            "move_history_list": []
         }
     }
 
@@ -841,7 +857,8 @@ def chess_puzzle(puzzle_id: int = None) -> dict:
                 "solution_uci": solution_uci,
                 "solution_san": solution_san,
                 "puzzle_id": actual_id,
-                "is_puzzle": True
+                "is_puzzle": True,
+                "move_history_list": []
             }
         }
     
@@ -1373,7 +1390,8 @@ async def handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
             result = chess_play_move(
                 arguments.get("move", ""),
                 arguments.get("fen"),
-                arguments.get("depth", 10)
+                arguments.get("depth", 10),
+                arguments.get("move_history")
             )
         elif tool_name == "chess_status":
             result = chess_status(arguments.get("fen"))
