@@ -120,10 +120,7 @@ export interface ChessMetadata {
   is_puzzle?: boolean;
 }
 
-export interface ChessWidgetState {
-  lastDepth?: number;
-  puzzleDifficulty?: string;
-  analysisVisible?: boolean;
-  boardOrientation?: "white" | "black";
+export interface ChessWidgetState extends UnknownObject {
+  lastPosition?: string;
 }
 
