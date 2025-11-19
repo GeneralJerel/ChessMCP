@@ -122,10 +122,5 @@ export interface ChessMetadata {
 
 export interface ChessWidgetState extends UnknownObject {
   lastPosition?: string;
-  lastDepth?: number;
-  puzzleDifficulty?: string;
-  analysisVisible?: boolean;
-  boardOrientation?: "white" | "black";
-  currentMoveIndex?: number | null;
 }
 
